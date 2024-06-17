@@ -1,0 +1,124 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import LabelEncoder
+from sklearn.impute import SimpleImputer, KNNImputer
+
+
+trainFeat = pd.read_csv('training_set_features.csv')
+labels = pd.read_csv('training_set_labels.csv') 
+testFeat = pd.read_csv('test_set_features.csv') 
+
+
+print(trainFeat.info())
+sns.heatmap(trainFeat.isnull(), cmap='Blues', cbar=False, yticklabels=False, xticklabels=trainFeat.columns)
+
+
+def process(feat):
+   
+    columns_to_drop = ['health_insurance', 'employment_industry', 'employment_occupation']
+    feat = feat.drop(columns=columns_to_drop, errors='ignore')
+    
+   
+    cat_cols = [col for col in feat.columns if feat[col].dtype == 'O']
+    cont_cols = [col for col in feat.columns if col not in cat_cols]
+
+    for col in cat_cols:
+        feat[col] = LabelEncoder().fit_transform(feat[col])
+    
+    numerical_transformer = Pipeline(steps=[
+        ('imputer', KNNImputer())
+    ])
+
+    categorical_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='most_frequent'))
+    ])
+
+   
+    transformer = ColumnTransformer(
+        transformers=[
+            ('num', numerical_transformer, cont_cols),
+            ('cat', categorical_transformer, cat_cols)
+        ])
+
+   
+    feat_processed = transformer.fit_transform(feat)
+    
+   
+    processed_columns = cont_cols + cat_cols
+    feat_processed = pd.DataFrame(feat_processed, columns=processed_columns)
+    return feat_processed
+#applying the method to our training set
+trainFeat_processed = process(trainFeat)
+
+print(trainFeat_processed.shape)
+
+
+sns.heatmap(trainFeat_processed.isnull(), cmap='Blues', cbar=False, yticklabels=False, xticklabels=trainFeat_processed.columns)
+
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+train_data = pd.concat([trainFeat_processed, labels[['xyz_vaccine', 'seasonal_vaccine']]], axis=1)
+correlation_matrix = train_data.corr()
+sns.heatmap(correlation_matrix, annot=True)
+plt.show()
+
+
+
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.multioutput import MultiOutputClassifier
+from sklearn.model_selection import train_test_split
+
+
+X = trainFeat_processed.iloc[:, 1:] 
+y = labels[['xyz_vaccine', 'seasonal_vaccine']]
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+model_rfc = MultiOutputClassifier(RandomForestClassifier(random_state=42))
+model_rfc.fit(X_train, y_train)
+
+
+logreg = MultiOutputClassifier(LogisticRegression(max_iter=10000, random_state=42))
+logreg.fit(X_train, y_train)
+
+
+svm = MultiOutputClassifier(SVC(probability=True, random_state=42))
+svm.fit(X_train, y_train)
+
+from sklearn.metrics import roc_auc_score
+
+
+submission_format = pd.read_csv('submission_format.csv')
+
+y_pred_logreg = logreg.predict_proba(X_test)
+y_pred_rfc = model_rfc.predict_proba(X_test)
+y_pred_svm = svm.predict_proba(X_test)
+
+mean_roc_auc_svm = (roc_auc_score(y_test['xyz_vaccine'], y_pred_svm[0][:, 1]) +  roc_auc_score(y_test['seasonal_vaccine'], y_pred_svm[1][:, 1])) / 2
+mean_roc_auc_logreg = (roc_auc_score(y_test['xyz_vaccine'], y_pred_logreg[0][:, 1]) +  roc_auc_score(y_test['seasonal_vaccine'], y_pred_logreg[1][:, 1])) / 2
+mean_roc_auc_rfc = (roc_auc_score(y_test['xyz_vaccine'], y_pred_rfc[0][:, 1]) +  roc_auc_score(y_test['seasonal_vaccine'], y_pred_rfc[1][:, 1])) / 2
+
+
+print(f'Mean ROC AUC are SVM : {mean_roc_auc_svm}, LogReg: {mean_roc_auc_logreg}, RFC: {mean_roc_auc_rfc}')
+
+
+testFeat_processed = process(testFeat)
+
+test = testFeat_processed.iloc[: , 1:] 
+
+y_pred_rfc = svm.predict_proba(test) 
+
+submission_format['xyz_vaccine'] = y_pred_rfc[0][:, 1]  
+submission_format['seasonal_vaccine'] = y_pred_rfc[1][:, 1] 
+
+submission_format.to_csv('submit_final_RFC.csv', index=False)
